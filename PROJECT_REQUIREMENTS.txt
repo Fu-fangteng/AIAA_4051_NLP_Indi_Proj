@@ -1,0 +1,51 @@
+AIAA 4051: Introduction to NLP
+Individual Project
+Deadline: 23:55PM, April 15
+Artificial Intelligence Thrust, HKUST(GZ)
+Spring 2026
+1 Fine-tuning Llama 2-7B with LoRA
+1.1 Task Description
+Each student is required to use the Llama 2-7B model and fine-tune it on the provided dataset
+using LoRA. The dataset can be found on Canvas under the folder Files/dataset. Each student can
+split the provided dataset into a training set and a validation set on their own. During the training
+process, please compute and store the model’s performance (accuracy, which is the number of times
+a correct answer appearing in the generated response divided by the total number of questions).
+1.2 LoRA Requirement
+Students are required to use PEFT to implement LoRA fine-tuning for the Llama 2-7B model.
+Official documentation:
+• PEFT documentation: https://huggingface.co/docs/peft/index
+• LoRA documentation in PEFT: https://huggingface.co/docs/peft/developer_guides/
+lora
+1.3 Submission Requirements
+The submitted source code must include the corresponding PEFT-based LoRA fine-tuning
+code. Students must submit:
+• PDF report, which must include:
+– a detailed description of the training process, including dataset splitting, model setup,
+fine-tuning procedure, and evaluation steps;
+– a detailed summary of the training hyperparameters, especially the LoRA-related
+hyperparameters, such as rank, alpha, dropout, epoches, and other important training
+settings;
+– plots of the training loss curve and the validation loss curve;
+– the accuracy evaluated on both the training set and the validation set;
+• source code: include the corresponding PEFT-based LoRA fine-tuning code.
+1
+• fine-tuned model: only the LoRA-related adapter files need to be saved and submitted.
+Uploading the original Llama 2-7B model weights is not required.
+All submission files should be organized into a single folder named studentID name, for example,
+50011190 Yazheng Liu. This folder should contain:
+• a PDF report named studentID name.pdf;
+• a folder named studentID name code, which contains the source code;
+• a folder named studentID name model, which contains the saved adapter files.
+1.4 Evaluation
+The final grade will be determined based on the model’s accuracy on the test set as well as the
+completeness, clarity, and quality of the submitted report. We will run your submitted fine-tuned
+model on an additional test set that is not provided to the students.
+1.5 Model Download Hint
+The Llama 2-7B model can be downloaded from ModelScope. One available ModelScope repository
+for Llama 2-7B model is:
+https://www.modelscope.cn/models/shakechen/Llama-2-7b
+1.6 The use of Diandong
+For instructions on how to use the Diandong platform, please click this.
+1.7 Code understanding
+Part of the project’s codes may be used in the final exam.
+2
