@@ -1,32 +1,30 @@
 """
-run_official_test.py — CLI wrapper for the official evaluation script.
+run_official_test.py — 官方测试脚本的 CLI 封装。
 
-This replicates individual_project_test.py EXACTLY (same model loading,
-same prompt format, same is_correct rule) but with:
-  - configurable paths via CLI (no hardcoded "XXXX")
-  - JSON output for downstream summary generation
-  - support for a separate teacher-provided test set
+与 individual_project_test.py 完全相同的评分逻辑：
+    is_correct = (true_answer.strip().lower()) in (pred_answer.strip().lower())
 
-When --test_data_path is NOT given, falls back to the val split of
---data_path as a local proxy (train_ratio controls the split).
-When the teacher provides their official test file, pass it via
---test_data_path and results will reflect the true test accuracy.
+默认用 BF16 加载（兼容性最好）。
+教师评分脚本用 float16 + 4-bit，加 --load_in_4bit --fp16 可完全对齐。
 
 Usage:
-    # Local proxy (val split)
+    # 默认 BF16（推荐）
     python run_official_test.py \\
         --model_path   ../Llama-2-7b \\
-        --adapter_path ../experiments/r16_ep5 \\
+        --adapter_path ../experiments/r16_ep5_bf16 \\
         --data_path    ../data/dataset.json
 
-    # With official teacher test data
+    # 教师发放测试集后
     python run_official_test.py \\
-        --model_path    ../Llama-2-7b \\
-        --adapter_path  ../experiments/r16_ep5 \\
+        --model_path     ../Llama-2-7b \\
+        --adapter_path   ../experiments/r16_ep5_bf16 \\
         --test_data_path /path/to/teacher_test.json
+
+    # 完全复刻官方脚本精度（float16 + 4-bit）
+    python run_official_test.py ... --load_in_4bit --fp16
 """
 
-import os, sys, json, argparse
+import os, json, argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
@@ -37,53 +35,57 @@ from utils import load_and_split_dataset
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_path",     required=True, help="Base Llama-2-7b path")
-    p.add_argument("--adapter_path",   required=True, help="LoRA adapter directory")
-    p.add_argument("--data_path",      default="../data/dataset.json",
-                   help="Dataset used for train/val split (proxy when no test_data_path)")
+    p.add_argument("--model_path",     required=True)
+    p.add_argument("--adapter_path",   required=True)
+    p.add_argument("--data_path",      default="../data/dataset.json")
     p.add_argument("--test_data_path", default=None,
-                   help="Official teacher test file (JSON list). Overrides val-split proxy.")
-    p.add_argument("--train_ratio",    type=float, default=0.9,
-                   help="Only used when test_data_path is absent")
-    p.add_argument("--max_new_tokens", type=int, default=16)
-    p.add_argument("--output_file",    default=None,
-                   help="Where to save JSON results. "
-                        "Defaults to <adapter_path>/official_test_results.json")
+                   help="教师提供的测试集 JSON。不填则用 val split 作为 proxy。")
+    p.add_argument("--train_ratio",    type=float, default=0.9)
+    p.add_argument("--max_new_tokens", type=int,   default=16)
+    p.add_argument("--load_in_4bit",   action="store_true",
+                   help="用 4-bit 加载（显存不足，或需对齐官方脚本时使用）")
+    p.add_argument("--fp16",           action="store_true",
+                   help="用 float16（配合 --load_in_4bit 完全复刻官方脚本）")
+    p.add_argument("--output_file",    default=None)
     return p.parse_args()
 
 
-def load_model_and_tokenizer(model_path, adapter_path):
-    """Load model exactly as the official script does."""
-    # ── Tokenizer ──────────────────────────────────────────────────────────
+def load_model_and_tokenizer(model_path, adapter_path, load_in_4bit, fp16):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     tokenizer.pad_token    = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # ── Base model with 4-bit quantization ────────────────────────────────
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,   # keep float16 to match official script
-        bnb_4bit_use_double_quant=True,
-    )
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        quantization_config=quantization_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
-    )
+    dtype = torch.float16 if fp16 else torch.bfloat16
 
-    # ── LoRA adapter ────────────────────────────────────────────────────────
+    if load_in_4bit:
+        print(f"Loading base model (4-bit, compute_dtype={'float16' if fp16 else 'bfloat16'})...")
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            quantization_config=quant_config,
+            device_map="auto",
+            torch_dtype=dtype,
+        )
+    else:
+        print(f"Loading base model ({'float16' if fp16 else 'BF16'})...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=dtype,
+            device_map="auto",
+        )
+
+    print(f"Loading LoRA adapter from {adapter_path} ...")
     model = PeftModel.from_pretrained(base_model, adapter_path)
     model.eval()
     return model, tokenizer
 
 
 def run_evaluation(model, tokenizer, test_data, max_new_tokens):
-    """
-    Evaluate exactly as individual_project_test.py does.
-    Rule: is_correct = (true_answer.strip().lower()) in (pred_answer.strip().lower())
-    """
     correct = 0
     results = []
 
@@ -91,7 +93,7 @@ def run_evaluation(model, tokenizer, test_data, max_new_tokens):
         question    = example["question"]
         true_answer = example["correct_answer"].strip().lower()
 
-        # Prompt format — matches individual_project_test.py exactly
+        # 与 individual_project_test.py 完全一致的 prompt
         prompt = f"Question: {question} Answer:"
         encoding = tokenizer(prompt, return_tensors="pt", padding=True)
         input_ids      = encoding.input_ids.to(model.device)
@@ -110,7 +112,6 @@ def run_evaluation(model, tokenizer, test_data, max_new_tokens):
         generated_tokens = outputs[0][input_ids.shape[1]:]
         pred_answer = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip().lower()
 
-        # Official scoring rule
         is_correct = true_answer in pred_answer
         if is_correct:
             correct += 1
@@ -131,44 +132,40 @@ def main():
     output_file = args.output_file or os.path.join(args.adapter_path, "official_test_results.json")
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
 
-    # ── Load test data ────────────────────────────────────────────────────────
     if args.test_data_path:
-        print(f"[INFO] Using official teacher test data: {args.test_data_path}")
+        print(f"[INFO] 使用教师测试集: {args.test_data_path}")
         with open(args.test_data_path, encoding="utf-8") as f:
             test_data = json.load(f)
         data_source = "teacher_test"
     else:
-        print(f"[INFO] No test_data_path given. Using val split of {args.data_path} as proxy.")
+        print(f"[INFO] 未提供 test_data_path，使用 val split 作为 proxy")
         _, test_data = load_and_split_dataset(args.data_path, train_ratio=args.train_ratio)
         data_source = "val_split_proxy"
 
-    print(f"[INFO] Test samples: {len(test_data)}")
+    print(f"[INFO] 测试样本数: {len(test_data)}")
 
-    # ── Load model ────────────────────────────────────────────────────────────
-    print(f"[INFO] Loading base model: {args.model_path}")
-    print(f"[INFO] Loading adapter:    {args.adapter_path}")
-    model, tokenizer = load_model_and_tokenizer(args.model_path, args.adapter_path)
+    model, tokenizer = load_model_and_tokenizer(
+        args.model_path, args.adapter_path, args.load_in_4bit, args.fp16
+    )
 
-    # ── Evaluate ──────────────────────────────────────────────────────────────
     accuracy, results = run_evaluation(model, tokenizer, test_data, args.max_new_tokens)
 
     print(f"\n{'='*50}")
     print(f"  Official Test Accuracy: {accuracy*100:.2f}%  ({int(accuracy*len(test_data))}/{len(test_data)})")
-    print(f"  Data source: {data_source}")
+    print(f"  数据来源: {data_source}")
     print(f"{'='*50}\n")
 
-    # ── Save results ──────────────────────────────────────────────────────────
     output = {
-        "adapter_path":  args.adapter_path,
-        "data_source":   data_source,
-        "accuracy":      accuracy,
-        "correct":       int(accuracy * len(test_data)),
-        "total":         len(test_data),
-        "results":       results,
+        "adapter_path": args.adapter_path,
+        "data_source":  data_source,
+        "accuracy":     accuracy,
+        "correct":      int(accuracy * len(test_data)),
+        "total":        len(test_data),
+        "results":      results,
     }
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
-    print(f"[INFO] Results saved → {output_file}")
+    print(f"[INFO] 结果保存 → {output_file}")
 
 
 if __name__ == "__main__":

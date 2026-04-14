@@ -208,12 +208,15 @@ fi
 
 # ── Step 2: Internal evaluation (train + val split) ───────────────────────────
 EVAL_RESULT_FILE="$EXP_DIR/eval_results.json"
-if ! run_logged "STEP 2/4 — Internal Evaluation (train+val split)" \
-    python -u "$SCRIPT_DIR/evaluate.py" \
-        --model_path   "$MODEL_PATH" \
-        --adapter_path "$EXP_DIR" \
-        --data_path    "$DATA_PATH" \
-        --output_file  "$EVAL_RESULT_FILE"; then
+EVAL_ARGS=(
+    python -u "$SCRIPT_DIR/evaluate.py"
+    --model_path   "$MODEL_PATH"
+    --adapter_path "$EXP_DIR"
+    --data_path    "$DATA_PATH"
+    --output_file  "$EVAL_RESULT_FILE"
+)
+[[ "$LOAD_4BIT" == "true" ]] && EVAL_ARGS+=(--load_in_4bit)
+if ! run_logged "STEP 2/4 — Internal Evaluation (train+val split)" "${EVAL_ARGS[@]}"; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN] Internal eval failed. Continuing." | tee -a "$LOG_FILE"
 fi
 
@@ -226,6 +229,7 @@ OFFICIAL_TEST_ARGS=(
     --data_path    "$DATA_PATH"
     --output_file  "$OFFICIAL_RESULT_FILE"
 )
+[[ "$LOAD_4BIT" == "true" ]] && OFFICIAL_TEST_ARGS+=(--load_in_4bit)
 [[ -n "$TEST_DATA_PATH" ]] && OFFICIAL_TEST_ARGS+=(--test_data_path "$TEST_DATA_PATH")
 
 if ! run_logged "STEP 3/4 — Official Test Evaluation" "${OFFICIAL_TEST_ARGS[@]}"; then
