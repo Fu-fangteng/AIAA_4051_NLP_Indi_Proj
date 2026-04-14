@@ -64,8 +64,12 @@ BATCH_SIZE=8
 GRAD_ACCUM=2
 LR="2e-4"
 MAX_LENGTH=256
-LOAD_4BIT=true
-GRAD_CKPT=false
+# RTX 4090 (24 GB): BF16 LoRA fits (~18 GB). 4-bit is off by default.
+# Add --load_in_4bit if VRAM < 20 GB or you want larger batch sizes.
+LOAD_4BIT=false
+# Gradient checkpointing: saves ~3 GB VRAM at ~30% speed cost.
+# Recommended for BF16 on 4090 to leave comfortable headroom.
+GRAD_CKPT=true
 USE_WANDB=false
 RESUME=false
 EVAL_ONLY=false
@@ -174,14 +178,16 @@ if [[ "$EVAL_ONLY" == "false" ]]; then
     TRAIN_DURATION=$(( TRAIN_END - TRAIN_START ))
     TRAIN_DURATION_STR="$(( TRAIN_DURATION/3600 ))h $(( (TRAIN_DURATION%3600)/60 ))m $(( TRAIN_DURATION%60 ))s"
 
-    # Save timing info for make_summary.py
+    # Save timing info for make_summary.py (use Python for cross-platform timestamp)
     python -u -c "
-import json, os
+import json, datetime
+ts_start = datetime.datetime.fromtimestamp($TRAIN_START)
+ts_end   = datetime.datetime.fromtimestamp($TRAIN_END)
 timing = {
-    'start_time':    '$(date -d @$TRAIN_START "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r $TRAIN_START "+%Y-%m-%d %H:%M:%S")',
-    'end_time':      '$(date -d @$TRAIN_END   "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r $TRAIN_END   "+%Y-%m-%d %H:%M:%S")',
-    'duration_sec':  $TRAIN_DURATION,
-    'duration_str':  '$TRAIN_DURATION_STR',
+    'start_time':   ts_start.strftime('%Y-%m-%d %H:%M:%S'),
+    'end_time':     ts_end.strftime('%Y-%m-%d %H:%M:%S'),
+    'duration_sec': $TRAIN_DURATION,
+    'duration_str': '$TRAIN_DURATION_STR',
 }
 with open('$EXP_DIR/timing.json', 'w') as f:
     json.dump(timing, f, indent=2)

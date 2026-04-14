@@ -210,6 +210,10 @@ def main():
         )
         if args.grad_ckpt:
             model.gradient_checkpointing_enable()
+            # Required when grad checkpointing is on without kbit training:
+            # ensures the first non-embedding activation has requires_grad=True
+            # so backward hooks fire correctly through frozen base layers.
+            model.enable_input_require_grads()
 
     model.config.use_cache = False
 

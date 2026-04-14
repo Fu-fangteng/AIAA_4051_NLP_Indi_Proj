@@ -21,8 +21,10 @@ CMD="bash $SCRIPT_DIR/pipeline.sh \
     --grad_accum  2 \
     --lr          2e-4 \
     --max_length  256 \
-    --load_in_4bit \
+    --grad_ckpt \
     --use_wandb"
+    # No --load_in_4bit: RTX 4090 (24 GB) runs BF16 LoRA comfortably (~18 GB).
+    # Add --load_in_4bit if your GPU has < 20 GB VRAM.
 
 if ! command -v tmux &> /dev/null; then
     echo "[WARNING] tmux not found. Running in foreground (SSH disconnect = loss of session)."
