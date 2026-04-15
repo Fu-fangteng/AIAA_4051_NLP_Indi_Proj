@@ -30,7 +30,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 from tqdm import tqdm
 
-from utils import load_and_split_dataset
+from utils import load_and_split_dataset, format_prompt
 
 # ── Compatibility fix ─────────────────────────────────────────────────────────
 if not hasattr(nn.Module, "set_submodule"):
@@ -48,7 +48,7 @@ def parse_args():
     p.add_argument("--model_path",      default="./Llama-2-7b")
     p.add_argument("--adapter_path",    default="../model")
     p.add_argument("--data_path",       default="../data/dataset.json")
-    p.add_argument("--train_ratio",     type=float, default=0.9)
+    p.add_argument("--train_ratio",     type=float, default=0.85)
     p.add_argument("--max_new_tokens",  type=int,   default=32)
     p.add_argument("--eval_batch_size", type=int,   default=16,
                    help="Samples per generate() call. Larger = faster but more VRAM. "
@@ -144,7 +144,7 @@ def evaluate_split(model, tokenizer, data, split_name, max_new_tokens, batch_siz
                             unit="batch"):
         batch = data[batch_start : batch_start + batch_size]
 
-        prompts      = [f"Question: {s['question'].strip()} Answer:" for s in batch]
+        prompts      = [format_prompt(s["question"]) for s in batch]
         true_answers = [s["correct_answer"].strip().lower() for s in batch]
 
         # Left-pad so all prompts in the batch are the same length

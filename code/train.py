@@ -62,7 +62,7 @@ def parse_args():
     p.add_argument("--model_path",              default="./Llama-2-7b")
     p.add_argument("--data_path",               default="../data/dataset.json")
     p.add_argument("--output_dir",              default="../model")
-    p.add_argument("--train_ratio",             type=float, default=0.9)
+    p.add_argument("--train_ratio",             type=float, default=0.85)  # 0.85→750 val samples (more stable)
     p.add_argument("--epochs",                  type=int,   default=3)
     p.add_argument("--batch_size",              type=int,   default=8)
     p.add_argument("--grad_accum",              type=int,   default=2)
@@ -72,7 +72,7 @@ def parse_args():
     p.add_argument("--max_length",              type=int,   default=128)
     p.add_argument("--lora_r",                  type=int,   default=16)
     p.add_argument("--lora_alpha",              type=int,   default=32)
-    p.add_argument("--lora_dropout",            type=float, default=0.05)
+    p.add_argument("--lora_dropout",            type=float, default=0.1)   # 0.05→0.1 per optimization guide
     p.add_argument("--early_stopping_patience", type=int,   default=2)
     p.add_argument("--load_in_4bit",            action="store_true")
     p.add_argument("--grad_ckpt",               action="store_true")
