@@ -39,10 +39,24 @@ if not hasattr(nn.Module, "set_submodule"):
 
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments, TrainerCallback,
-    BitsAndBytesConfig, EarlyStoppingCallback,
+    BitsAndBytesConfig, EarlyStoppingCallback, Trainer as _HFTrainer,
 )
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from trl import SFTTrainer
+
+# ── Trainer compatibility patch ───────────────────────────────────────────────
+# Some trl versions call super().__init__(tokenizer=...) internally, but
+# transformers >= 4.46 renamed that parameter to processing_class.
+# Patch _HFTrainer to accept tokenizer= and forward it as processing_class=.
+import inspect as _inspect
+if "tokenizer" not in _inspect.signature(_HFTrainer.__init__).parameters:
+    _orig_trainer_init = _HFTrainer.__init__
+    def _patched_trainer_init(self, *args, tokenizer=None, **kwargs):
+        if tokenizer is not None and "processing_class" not in kwargs:
+            kwargs["processing_class"] = tokenizer
+        _orig_trainer_init(self, *args, **kwargs)
+    _HFTrainer.__init__ = _patched_trainer_init
+    print("[INFO] Applied Trainer tokenizer→processing_class compatibility patch")
 try:
     from trl import DataCollatorForCompletionOnly
     print("[INFO] Using trl.DataCollatorForCompletionOnly")

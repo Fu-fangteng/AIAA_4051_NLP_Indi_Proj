@@ -299,9 +299,19 @@ def check_model(model_path, data, vram_gb, load_in_4bit):
     # Mini SFTTrainer smoke test — uses EXACTLY the same API as train.py
     try:
         import inspect
-        from transformers import TrainingArguments
+        from transformers import TrainingArguments, Trainer as _HFTrainer
         from datasets import Dataset
         from trl import SFTTrainer
+
+        # Same Trainer compatibility patch as train.py
+        if "tokenizer" not in inspect.signature(_HFTrainer.__init__).parameters:
+            _orig_ti = _HFTrainer.__init__
+            def _patched_ti(self, *args, tokenizer=None, **kwargs):
+                if tokenizer is not None and "processing_class" not in kwargs:
+                    kwargs["processing_class"] = tokenizer
+                _orig_ti(self, *args, **kwargs)
+            _HFTrainer.__init__ = _patched_ti
+            ok("Applied Trainer tokenizer→processing_class compatibility patch")
 
         # Same DataCollatorForCompletionOnly import logic as train.py
         try:
