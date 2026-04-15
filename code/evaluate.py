@@ -103,6 +103,29 @@ def load_model(model_path, adapter_path, load_in_4bit=False):
     return model, tokenizer
 
 
+def _clean_prediction(text: str) -> str:
+    """
+    Strip verbose tail from model generation.
+    Llama 2 sometimes generates 'mirage\n\nQuestion: ...' or multi-sentence
+    explanations. We keep only the core answer phrase.
+    Rules (applied in order):
+      1. Truncate at first double-newline (paragraph break = model rambling)
+      2. Truncate when model loops back to generate another 'question:'
+      3. Take only the first sentence if it is >= 2 words
+    """
+    text = text.split("\n\n")[0]
+    lower = text.lower()
+    for marker in ("\nquestion:", " question:"):
+        pos = lower.find(marker)
+        if pos != -1:
+            text = text[:pos]
+            lower = lower[:pos]
+    first_sentence = text.split(". ")[0].strip()
+    if len(first_sentence.split()) >= 2:
+        text = first_sentence
+    return text.strip()
+
+
 def evaluate_split(model, tokenizer, data, split_name, max_new_tokens, batch_size):
     """
     Batched generation: process `batch_size` samples per model.generate() call.
@@ -110,6 +133,11 @@ def evaluate_split(model, tokenizer, data, split_name, max_new_tokens, batch_siz
     """
     correct = 0
     results = []
+
+    # Stop at newline as well as EOS — prevents the model from running past the
+    # first answer line into repeated "Question: ..." generations.
+    nl_ids   = tokenizer.encode("\n", add_special_tokens=False)
+    stop_ids = [tokenizer.eos_token_id] + nl_ids
 
     for batch_start in tqdm(range(0, len(data), batch_size),
                             desc=f"Evaluating {split_name}",
@@ -138,13 +166,14 @@ def evaluate_split(model, tokenizer, data, split_name, max_new_tokens, batch_siz
                 max_new_tokens = max_new_tokens,
                 do_sample      = False,
                 pad_token_id   = tokenizer.eos_token_id,
-                eos_token_id   = tokenizer.eos_token_id,
+                eos_token_id   = stop_ids,
             )
 
         # Decode only the newly generated tokens for each sample
         for i, sample in enumerate(batch):
             generated_tokens = outputs[i][prompt_len:]
-            pred_answer = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip().lower()
+            raw         = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            pred_answer = _clean_prediction(raw).lower()
             is_correct  = true_answers[i] in pred_answer
             if is_correct:
                 correct += 1
