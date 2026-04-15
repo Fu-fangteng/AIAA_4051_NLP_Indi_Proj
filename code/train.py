@@ -319,6 +319,16 @@ def main():
     )
 
     # ── Trainer ───────────────────────────────────────────────────────────────
+    # Detect trl API version: newer trl renamed 'tokenizer' → 'processing_class'
+    # and 'max_seq_length' → 'max_length' (trl >= 0.9 / 0.12 depending on build).
+    import inspect
+    _sft_params = inspect.signature(SFTTrainer.__init__).parameters
+
+    _tok_kwarg  = "processing_class" if "processing_class" in _sft_params else "tokenizer"
+    _len_kwarg  = "max_length"       if "max_length"       in _sft_params else "max_seq_length"
+
+    print(f"[INFO] SFTTrainer API: {_tok_kwarg=}, {_len_kwarg=}")
+
     loss_cb = SaveLossCallback(args.output_dir)
     trainer = SFTTrainer(
         model           = model,
@@ -327,12 +337,11 @@ def main():
         eval_dataset    = val_dataset,
         formatting_func = formatting_func,
         data_collator   = collator,
-        tokenizer       = tokenizer,
-        max_seq_length  = args.max_length,
         callbacks       = [
             loss_cb,
             EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
         ],
+        **{_tok_kwarg: tokenizer, _len_kwarg: args.max_length},
     )
 
     resume_from = find_last_checkpoint(args.output_dir) if args.resume else None

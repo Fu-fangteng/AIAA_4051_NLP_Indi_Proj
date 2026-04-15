@@ -53,10 +53,11 @@ def check_imports():
         ("torch",          "PyTorch"),
         ("transformers",   "Transformers"),
         ("peft",           "PEFT (LoRA)"),
+        ("trl",            "TRL (SFTTrainer)"),
         ("datasets",       "Datasets"),
         ("accelerate",     "Accelerate"),
+        ("sklearn",        "scikit-learn"),
         ("bitsandbytes",   "BitsAndBytes (4-bit)"),
-        ("scipy",          "SciPy"),
         ("tqdm",           "tqdm"),
         ("matplotlib",     "Matplotlib"),
     ]
@@ -65,8 +66,25 @@ def check_imports():
             m = __import__(module)
             version = getattr(m, "__version__", "?")
             ok(f"{label:<20} {version}")
-        except ImportError as e:
+        except ImportError:
             fail(f"{label:<20} NOT FOUND — pip install {module}")
+
+    # Detailed trl API compatibility check
+    try:
+        from trl import SFTTrainer
+        import inspect
+        params = inspect.signature(SFTTrainer.__init__).parameters
+        tok_kwarg = "processing_class" if "processing_class" in params else "tokenizer"
+        len_kwarg = "max_length"       if "max_length"       in params else "max_seq_length"
+        ok(f"SFTTrainer API: tokenizer kwarg='{tok_kwarg}', length kwarg='{len_kwarg}'")
+    except Exception as e:
+        fail(f"SFTTrainer import/introspection failed: {e}")
+
+    try:
+        from trl import DataCollatorForCompletionOnly
+        ok("DataCollatorForCompletionOnly available from trl")
+    except ImportError:
+        warn("DataCollatorForCompletionOnly not in trl — train.py built-in fallback will be used")
 
 
 # ── Check 2: CUDA / GPU ───────────────────────────────────────────────────────
@@ -278,57 +296,99 @@ def check_model(model_path, data, vram_gb, load_in_4bit):
         fail(f"LoRA setup failed: {e}")
         return
 
-    # Mini training (2 steps on 4 synthetic samples)
+    # Mini SFTTrainer smoke test — uses EXACTLY the same API as train.py
     try:
-        from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
+        import inspect
+        from transformers import TrainingArguments
         from datasets import Dataset
+        from trl import SFTTrainer
 
-        # Build 4 minimal samples matching our training format
+        # Same DataCollatorForCompletionOnly import logic as train.py
+        try:
+            from trl import DataCollatorForCompletionOnly
+        except ImportError:
+            import torch as _torch
+            from dataclasses import dataclass as _dc
+            from typing import Any as _Any, Dict as _Dict, List as _List, Union as _Union
+
+            @_dc
+            class DataCollatorForCompletionOnly:
+                response_template: _Union[str, _List[int]]
+                tokenizer: _Any
+                def __post_init__(self):
+                    if isinstance(self.response_template, str):
+                        self.response_template_ids = self.tokenizer.encode(
+                            self.response_template, add_special_tokens=False)
+                    else:
+                        self.response_template_ids = list(self.response_template)
+                def __call__(self, features: _List[_Dict[str, _Any]]) -> _Dict[str, _Any]:
+                    ids_list = [f["input_ids"] for f in features]
+                    max_len  = max(len(x) for x in ids_list)
+                    pad_id   = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+                    padded, masks = [], []
+                    for ids in ids_list:
+                        pad_len = max_len - len(ids)
+                        padded.append(ids + [pad_id] * pad_len)
+                        masks.append([1]*len(ids) + [0]*pad_len)
+                    inp = _torch.tensor(padded, dtype=_torch.long)
+                    lbl = inp.clone()
+                    tmpl, tlen = self.response_template_ids, len(self.response_template_ids)
+                    for i, seq in enumerate(inp.tolist()):
+                        found = False
+                        for j in range(len(seq) - tlen + 1):
+                            if seq[j:j+tlen] == tmpl:
+                                lbl[i, :j+tlen] = -100; found = True; break
+                        if not found: lbl[i] = -100
+                        lbl[i][inp[i] == pad_id] = -100
+                    return {"input_ids": inp,
+                            "attention_mask": _torch.tensor(masks, dtype=_torch.long),
+                            "labels": lbl}
+
+        # Detect tokenizer/length kwarg names (same as train.py)
+        _params   = inspect.signature(SFTTrainer.__init__).parameters
+        _tok_kw   = "processing_class" if "processing_class" in _params else "tokenizer"
+        _len_kw   = "max_length"       if "max_length"       in _params else "max_seq_length"
+
+        collator = DataCollatorForCompletionOnly(
+            response_template=" Answer:",
+            tokenizer=tokenizer,
+        )
+
         mini_samples = [
             {"question": "What is the capital of France?",  "correct_answer": "Paris"},
             {"question": "What is 2 plus 2?",               "correct_answer": "four"},
             {"question": "What color is the sky?",          "correct_answer": "blue"},
             {"question": "What is water made of?",          "correct_answer": "hydrogen and oxygen"},
         ]
+        mini_ds = Dataset.from_list(mini_samples)
 
-        def tokenize(sample):
-            prompt    = f"Question: {sample['question']} Answer:"
-            full_text = f"Question: {sample['question']} Answer: {sample['correct_answer']}"
-            prompt_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
-            enc = tokenizer(full_text, truncation=True, max_length=64, add_special_tokens=True)
-            labels = enc["input_ids"].copy()
-            for i in range(min(len(prompt_ids), len(labels))):
-                labels[i] = -100
-            enc["labels"] = labels
-            return enc
-
-        raw_ds   = Dataset.from_list(mini_samples)
-        train_ds = raw_ds.map(
-            lambda ex: tokenize({"question": ex["question"], "correct_answer": ex["correct_answer"]}),
-            remove_columns=raw_ds.column_names,
-        )
+        def fmt(examples):
+            return [f"Question: {q} Answer: {a}"
+                    for q, a in zip(examples["question"], examples["correct_answer"])]
 
         train_args = TrainingArguments(
-            output_dir               = "/tmp/check_env_smoke",
-            num_train_epochs         = 1,
+            output_dir                  = "/tmp/check_env_smoke",
+            num_train_epochs            = 1,
             per_device_train_batch_size = 2,
-            max_steps                = 2,   # only 2 steps — quick!
-            bf16                     = not use_4bit,
-            fp16                     = False,
-            logging_steps            = 1,
-            report_to                = "none",
-            save_strategy            = "no",
+            max_steps                   = 2,
+            bf16                        = not use_4bit,
+            fp16                        = False,
+            logging_steps               = 1,
+            report_to                   = "none",
+            save_strategy               = "no",
         )
-        trainer = Trainer(
-            model         = model,
-            args          = train_args,
-            train_dataset = train_ds,
-            data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, padding=True),
+        trainer = SFTTrainer(
+            model           = model,
+            args            = train_args,
+            train_dataset   = mini_ds,
+            formatting_func = fmt,
+            data_collator   = collator,
+            **{_tok_kw: tokenizer, _len_kw: 64},
         )
         trainer.train()
-        ok("2-step training run completed without errors")
+        ok(f"SFTTrainer 2-step smoke test passed  ({_tok_kw=}, {_len_kw=})")
     except Exception as e:
-        fail(f"Training smoke test failed: {e}\n{traceback.format_exc()}")
+        fail(f"SFTTrainer smoke test failed: {e}\n{traceback.format_exc()}")
         return
 
     # Generation check
