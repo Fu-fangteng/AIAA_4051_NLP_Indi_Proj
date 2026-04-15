@@ -42,7 +42,66 @@ from transformers import (
     BitsAndBytesConfig, EarlyStoppingCallback,
 )
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
-from trl import SFTTrainer, DataCollatorForCompletionOnly
+from trl import SFTTrainer
+try:
+    from trl import DataCollatorForCompletionOnly
+    print("[INFO] Using trl.DataCollatorForCompletionOnly")
+except ImportError:
+    # trl < 0.4.7 — provide a compatible drop-in implementation
+    print("[WARN] DataCollatorForCompletionOnly not found in trl — using built-in fallback")
+    import torch
+    from dataclasses import dataclass
+    from typing import Any, Dict, List, Union
+
+    @dataclass
+    class DataCollatorForCompletionOnly:
+        """Answer-only loss collator: masks everything before RESPONSE_TEMPLATE to -100."""
+        response_template: Union[str, List[int]]
+        tokenizer: Any
+
+        def __post_init__(self):
+            if isinstance(self.response_template, str):
+                self.response_template_ids = self.tokenizer.encode(
+                    self.response_template, add_special_tokens=False
+                )
+            else:
+                self.response_template_ids = list(self.response_template)
+
+        def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+            input_ids_list = [f["input_ids"] for f in features]
+            max_len = max(len(x) for x in input_ids_list)
+            pad_id  = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+
+            padded_ids  = []
+            attn_masks  = []
+            for ids in input_ids_list:
+                pad_len = max_len - len(ids)
+                padded_ids.append(ids + [pad_id] * pad_len)
+                attn_masks.append([1] * len(ids) + [0] * pad_len)
+
+            input_tensor = torch.tensor(padded_ids, dtype=torch.long)
+            labels       = input_tensor.clone()
+            tmpl         = self.response_template_ids
+            tlen         = len(tmpl)
+
+            for i, seq in enumerate(input_tensor.tolist()):
+                found = False
+                for j in range(len(seq) - tlen + 1):
+                    if seq[j : j + tlen] == tmpl:
+                        labels[i, : j + tlen] = -100   # mask prompt + template
+                        found = True
+                        break
+                if not found:
+                    labels[i] = -100                   # template missing → mask all
+                # Always mask padding
+                labels[i][input_tensor[i] == pad_id] = -100
+
+            return {
+                "input_ids":      input_tensor,
+                "attention_mask": torch.tensor(attn_masks, dtype=torch.long),
+                "labels":         labels,
+            }
+
 from datasets import Dataset
 
 from utils import load_and_split_dataset, format_prompt
