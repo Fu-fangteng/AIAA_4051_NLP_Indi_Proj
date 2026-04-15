@@ -161,8 +161,8 @@ def check_utils(data):
 
     sample = data[0]
     try:
-        p_train = format_prompt(sample, include_answer=True)
-        p_infer = format_prompt(sample, include_answer=False)
+        p_train = format_prompt(sample["question"], sample["correct_answer"])
+        p_infer = format_prompt(sample["question"])
         ok(f"format_prompt (train): {repr(p_train[:60])}...")
         ok(f"format_prompt (infer): {repr(p_infer[:60])}...")
 
