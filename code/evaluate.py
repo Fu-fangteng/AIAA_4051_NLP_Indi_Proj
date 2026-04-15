@@ -49,7 +49,7 @@ def parse_args():
     p.add_argument("--adapter_path",    default="../model")
     p.add_argument("--data_path",       default="../data/dataset.json")
     p.add_argument("--train_ratio",     type=float, default=0.9)
-    p.add_argument("--max_new_tokens",  type=int,   default=16)
+    p.add_argument("--max_new_tokens",  type=int,   default=32)
     p.add_argument("--eval_batch_size", type=int,   default=16,
                    help="Samples per generate() call. Larger = faster but more VRAM. "
                         "Default 16 uses ~4 GB extra on top of model.")
